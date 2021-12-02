@@ -329,6 +329,7 @@ class TransformerDecoderLayerBase(nn.Module):
         self_attn_padding_mask: Optional[torch.Tensor] = None,
         need_attn: bool = False,
         need_head_weights: bool = False,
+        retrieval_datastore=None,
     ):
         """
         Args:
@@ -339,6 +340,7 @@ class TransformerDecoderLayerBase(nn.Module):
             need_attn (bool, optional): return attention weights
             need_head_weights (bool, optional): return attention weights
                 for each head (default: return average over heads).
+            retrieval_datastore: the class of knn datastore for retrieving similar image features
 
         Returns:
             encoded output of shape `(seq_len, batch, embed_dim)`
@@ -383,6 +385,17 @@ class TransformerDecoderLayerBase(nn.Module):
             y = torch.cat((encoder_out, x), dim=0)
         else:
             y = x
+
+        # here we adopt knn datastore to retrieve the similar image features
+        if retrieval_datastore is not None:
+            knn_search_result = retrieval_datastore.retrieve(x)
+            knn_dists = knn_search_result['distance']  # [batch, seq len, k]  # we need do sort
+            knn_index = knn_search_result['knn_index']
+            tgt_index = knn_search_result['tgt_index']  # the tgt_index is the list of desired image features
+            assert tgt_index.shape[-1] == x.shape[-1]
+            # then following memorizing transformer, q is kept as the same
+            # key and value is the concatenation of tgt_index and y
+            y = torch.cat((y, tgt_index), dim=1)
 
         x, attn = self.self_attn(
             query=x,

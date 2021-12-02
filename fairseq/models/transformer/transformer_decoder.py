@@ -26,6 +26,7 @@ from fairseq.modules.checkpoint_activations import checkpoint_wrapper
 from fairseq.modules.quant_noise import quant_noise as apply_quant_noise_
 from torch import Tensor
 
+from fairseq.modules.knn_datastore import KNN_Dstore
 
 # rewrite name for backward compatibility in `make_generation_fast_`
 def module_name_fordropout(module_name: str) -> str:
@@ -137,6 +138,21 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         self.output_projection = output_projection
         if self.output_projection is None:
             self.build_output_projection(cfg, dictionary, embed_tokens)
+        
+        # add parameters for nn retrieval
+        self.fp16 = getattr(cfg, "fp16", False)
+        self.knn_datastore = None
+        if getattr(cfg, "load_knn_datastore", False):
+            self.knn_datastore = KNN_Dstore(cfg, len(dictionary))
+
+        self.use_knn_datastore = getattr(cfg, "use_knn_datastore", False)
+        self.knn_lambda_type = getattr(cfg, "knn_lambda_type", "fix")
+        self.knn_temperature_type = getattr(cfg, "knn_temperature_type", "fix")
+        self.knn_k_type = getattr(cfg, "knn_k_type", False)
+        self.label_count_as_feature = getattr(cfg, "label_count_as_feature", False)
+        self.relative_label_count = getattr(cfg, "relative_label_count", False)
+        self.avg_k = getattr(cfg, "avg_k", False)  
+
 
     def build_output_projection(self, cfg, dictionary, embed_tokens):
         if cfg.adaptive_softmax_cutoff is not None:
@@ -337,6 +353,19 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             else:
                 self_attn_mask = None
 
+            # x, layer_attn, _ = layer(
+            #     x,
+            #     enc,
+            #     padding_mask,
+            #     incremental_state,
+            #     self_attn_mask=self_attn_mask,
+            #     self_attn_padding_mask=self_attn_padding_mask,
+            #     need_attn=bool((idx == alignment_layer)),
+            #     need_head_weights=bool((idx == alignment_layer)),
+            # )
+            # The layer is one transformer decode layer 
+            # We need to perform retrieval and then put the retrieved items in the cross-attention computation
+            # therefore here I add a new input parameter 
             x, layer_attn, _ = layer(
                 x,
                 enc,
@@ -346,6 +375,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
                 self_attn_padding_mask=self_attn_padding_mask,
                 need_attn=bool((idx == alignment_layer)),
                 need_head_weights=bool((idx == alignment_layer)),
+                retrieval_datastore=self.knn_datastore
             )
             inner_states.append(x)
             if layer_attn is not None and idx == alignment_layer:
